@@ -82,25 +82,28 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-passport.use('login', new LocalStrategy(
-  (username, password, done) => {
+passport.use('login', new LocalStrategy({
+  usernameField: 'email',
+  passwordField: 'password'
+}, async (email, password, done) => {
 
   function isValidPassword(user, password) {
     return bcrypt.compareSync(password, user.password);
   }
 
-  model.findOne({username: username}, (err, user) =>{
-    if(err){
-      return done(err);
-    }
+  try{
+    const user = await model.findOne({email: email})
     if(!user){
+      console.log('error: no se encontro user');
       return done(null, false);
     }
     if(!isValidPassword(user, password)){
       return done(null, false);
     }
     return done(null, user);
-  });
+  }catch(err){
+    return done('error en strategy 1: '+ err);
+  }
 
 }));
 
@@ -109,11 +112,32 @@ passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-passport.deserializeUser((id, done) => {
+
+passport.deserializeUser( async (id, done) => {
   console.log('deserializeUser ejecutado');
-  model.findById(id, (err, user) => {
-    done(err, user);
-  });
+
+  //----1----
+  // model.findById(id, (err, user) =>{
+  //   done(err, user)
+  // })
+
+  //----2----
+  try{
+    const user = await model.findById(id)
+    done(null, user)
+  }catch(err){
+    done(err)
+  }
+
+  //----3----
+  // (async ()=>{
+  //   try{
+  //     const user = await model.findById(id)
+  //     return user
+  //   } catch (err) {
+  //     return err
+  //   }
+  // })()
 });
 
 
@@ -123,19 +147,22 @@ app.get("/login", (req, res) => {
 });
 
 app.post("/login", passport.authenticate('login', {
-    successRedirect: '/',
-    failureRedirect: '/faillogin'
+  successRedirect: '/',
+  failureRedirect: '/faillogin'
 }));
 
+// ASIGNA UN REQ.SESSION.USERNAME EN OTRA RUTA YA QUE EN EL METODO POST "/LOGIN" AUTENTIFICO.
 // app.post("/login", passport.authenticate('login', {
 //   failureRedirect: '/faillogin'
 // }), (req, res)=>{
-//   const {username} = req.body
-//   res.redirect('/setname/' + username)
+//   const {email} = req.body
+//   res.redirect('/setname/' + email)
 // });
 
-// app.get('/setname/:username', (req, res)=>{
-//   req.session.username = req.params.username
+// app.get('/setname/:email', (req, res)=>{
+//   req.session.email = req.params.email
+//   console.log(`Email 1: ${req.params.email}`);
+//   console.log(`Email 2: ${req.session.email}`);
 //   res.redirect('/')
 // })
 
@@ -193,9 +220,9 @@ app.get("/", (req, res) => {
 
     req.session.cookie.expires = new Date(Date.now() + 600000);
 
-    const nombre = req.session.username;
+    // const email = req.session.email;
 
-    res.render("inicio", { nombre });
+    res.render("inicio", {});
 
     io.on("connection", (socket) => {
       console.log("Nuevo cliente conectado");
