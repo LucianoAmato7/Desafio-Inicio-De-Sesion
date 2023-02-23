@@ -12,7 +12,13 @@ import mongoose from "mongoose";
 import passport from "passport";
 import {Strategy as LocalStrategy} from 'passport-local'
 
-//--CONFIGURACION Y CONEXION A MONDODB USUARIOS
+const app = express();
+const server = createServer(app);
+const io = new Server(server);
+const apiProdsSQL = new ApiProdsSQL();
+const apiMsjMongoDB = new ApiMsjMongoDB();
+      
+//--CONFIGURACION DE MONDODB PARA USUARIOS
 mongoose.set("strictQuery", false);
 const UserSchema = new mongoose.Schema(
   {
@@ -33,20 +39,6 @@ const UserSchema = new mongoose.Schema(
 
 const model = mongoose.model("users", UserSchema);
 
-mongoose.connect("mongodb+srv://coderhouse:coderhouse@coderhouse-backend.iwu4lzw.mongodb.net/ecommerce?retryWrites=true&w=majority", {
-  serverSelectionTimeoutMS: 5000,
-}).then(()=>{
-  console.log('Base de datos en MongoDB conectada');
-}).catch((error)=>{
-  console.log(`Error al conectarse a la base de datos: ${error}`);
-})
-
-const app = express();
-const server = createServer(app);
-const io = new Server(server);
-const apiProdsSQL = new ApiProdsSQL();
-const apiMsjMongoDB = new ApiMsjMongoDB();
-
 //PRODUCTOS - MariaDB
 // CORROBORA SI EXISTE LA TABLA "PRODUCTOS", SI NO EXISTE, LA CREA.
 apiProdsSQL.crearTablaProds();
@@ -64,6 +56,7 @@ app.set("view engine", "hbs");
 app.set("views", "./views");
 app.use(express.static("views/layouts"));
 
+//GUARDA LA SESSION EN MONGODB
 app.use(
   session({
     store: MongoStore.create({
@@ -71,7 +64,7 @@ app.use(
         "mongodb+srv://coderhouse:coderhouse@coderhouse-backend.iwu4lzw.mongodb.net/ecommerce?retryWrites=true&w=majority",
     }),
     secret: "secret-key",
-    resave: false,
+    resave: true  ,
     saveUninitialized: false,
     cookie: { secure: false, maxAge: 60 * 10000 }, // 10 minutos
     rolling: true
@@ -82,29 +75,39 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
+//ESTRATEGIA DE LOGIN
 passport.use('login', new LocalStrategy({
   usernameField: 'email',
   passwordField: 'password'
 }, async (email, password, done) => {
 
-  function isValidPassword(user, password) {
+  const isValidPassword = (user, password) => {
     return bcrypt.compareSync(password, user.password);
   }
 
   try{
-    const user = await model.findOne({email: email})
-    if(!user){
-      console.log('error: no se encontro user');
-      return done(null, false);
+    await mongoose.connect("mongodb+srv://coderhouse:coderhouse@coderhouse-backend.iwu4lzw.mongodb.net/ecommerce?retryWrites=true&w=majority", {
+    serverSelectionTimeoutMS: 10000,
+    })
+    try{
+      const user = await model.findOne({email: email})
+      if(!user){
+        return done(null, false);
+      }
+      if(!isValidPassword(user, password)){
+        return done(null, false);
+      }
+      return done(null, user);
+    }catch(err){
+      return done(err);
     }
-    if(!isValidPassword(user, password)){
-      return done(null, false);
-    }
-    return done(null, user);
   }catch(err){
-    return done('error en strategy 1: '+ err);
+    console.log(`Error al conectar la base de datos en la strategy 'Login': ${err}`);
+  } finally{
+    mongoose.disconnect().catch((err) => {
+      throw new Error("error al desconectar la base de datos");
+    });
   }
-
 }));
 
 passport.serializeUser((user, done) => {
@@ -112,34 +115,35 @@ passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-
 passport.deserializeUser( async (id, done) => {
   console.log('deserializeUser ejecutado');
 
-  //----1----
-  // model.findById(id, (err, user) =>{
-  //   done(err, user)
-  // })
-
-  //----2----
   try{
-    const user = await model.findById(id)
-    done(null, user)
+    await mongoose.connect("mongodb+srv://coderhouse:coderhouse@coderhouse-backend.iwu4lzw.mongodb.net/ecommerce?retryWrites=true&w=majority", {
+    serverSelectionTimeoutMS: 10000,
+    })
+    try{
+      const user = await model.findById(id)
+      done(null, user)
+    }catch(err){
+      done(err)
+    }
   }catch(err){
-    done(err)
+    console.log(`Error al conectar la base de datos en el "deserializeUser": ${err}`);
+  } finally{
+    mongoose.disconnect().catch((err) => {
+      throw new Error("error al desconectar la base de datos");
+    });
   }
-
-  //----3----
-  // (async ()=>{
-  //   try{
-  //     const user = await model.findById(id)
-  //     return user
-  //   } catch (err) {
-  //     return err
-  //   }
-  // })()
 });
 
+function checkAuthentication(req, res, next) {
+  if (req.isAuthenticated()){
+    next()
+  }else {
+    res.redirect('/login')
+  }
+}
 
 //LOGIN
 app.get("/login", (req, res) => {
@@ -147,25 +151,12 @@ app.get("/login", (req, res) => {
 });
 
 app.post("/login", passport.authenticate('login', {
-  successRedirect: '/',
   failureRedirect: '/faillogin'
-}));
-
-// ASIGNA UN REQ.SESSION.USERNAME EN OTRA RUTA YA QUE EN EL METODO POST "/LOGIN" AUTENTIFICO.
-// app.post("/login", passport.authenticate('login', {
-//   failureRedirect: '/faillogin'
-// }), (req, res)=>{
-//   const {email} = req.body
-//   res.redirect('/setname/' + email)
-// });
-
-// app.get('/setname/:email', (req, res)=>{
-//   req.session.email = req.params.email
-//   console.log(`Email 1: ${req.params.email}`);
-//   console.log(`Email 2: ${req.session.email}`);
-//   res.redirect('/')
-// })
-
+}), (req, res)=>{
+  const {email} = req.body
+  req.session.email = email
+  res.redirect('/')
+});
 
 //REGISTER
 app.get("/register", (req, res) => {
@@ -180,95 +171,97 @@ app.post("/register", (req, res) => {
 
   async function RegisterUser(password) {
 
-    try {
-
-      let users = await model.find({});
-      
-      if( users.some( u => u.email == user.email) ){
+    try{
+      await mongoose.connect("mongodb+srv://coderhouse:coderhouse@coderhouse-backend.iwu4lzw.mongodb.net/ecommerce?retryWrites=true&w=majority", {
+      serverSelectionTimeoutMS: 10000,
+      })
+      try {
+        let users = await model.find({});
+        
+        if( users.some( u => u.email == user.email) ){
+    
+          console.log('El usuario ya existe');
   
-        console.log('El usuario ya existe');
-
-        res.redirect("/failregister");
-
-      } else {
-
-        user.password = password
-        const newUser = new model(user);
-        await newUser.save();
-        console.log('Usuario registrado con exito');
-        res.redirect("/login");
+          res.redirect("/failregister");
+  
+        } else {
+  
+          user.password = password
+          const newUser = new model(user);
+          await newUser.save();
+          console.log('Usuario registrado con exito');
+          res.redirect("/login");
+        }
+      } catch (error) {
+        console.log(`Error en la query de la base de datos, en funcion RegisterUser: ${error}`);
       }
-
-    } catch (error) {
-      console.log(`Error en la query de la base de datos, en funcion RegisterUser: ${error}`);
+    }catch(err){
+      console.log(`Error al conectar la base de datos en el "deserializeUser": ${err}`);
+    } finally{
+      mongoose.disconnect().catch((err) => {
+        throw new Error("error al desconectar la base de datos");
+      });
     }
-
   };
 
   //ENCRIPTO LA CONTRASEÑA
   const saltRounds = 10;
-  bcrypt.hash(password, saltRounds, function(err, hash) {
+  bcrypt.hash(password, saltRounds, (err, hash) => {
     RegisterUser(hash)
   });
 
 });
 
 //INICIO
-app.get("/", (req, res) => {
+app.get("/",checkAuthentication, (req, res) => {
 
-  if(req.session){
+  req.session.cookie.expires = new Date(Date.now() + 600000);
 
-    req.session.cookie.expires = new Date(Date.now() + 600000);
+  const email = req.session.email;
 
-    // const email = req.session.email;
+  res.render("inicio", {email});
 
-    res.render("inicio", {});
+  io.on("connection", (socket) => {
+    console.log("Nuevo cliente conectado");
 
-    io.on("connection", (socket) => {
-      console.log("Nuevo cliente conectado");
-  
-      //MSJS
-  
-      apiMsjMongoDB.ListarMsjs().then((msjs) => {
-        socket.emit("mensajes", msjs);
-      });
-  
-      socket.on("nuevo-mensaje", (data) => {
-        apiMsjMongoDB
-          .guardarMsj(data)
-          .then(() => {
-            console.log("Mensaje cargado en la base de datos");
-            return apiMsjMongoDB.ListarMsjs();
-          })
-          .then((msj) => {
-            io.sockets.emit("mensajes", msj);
-            console.log("Vista de mensajes actualizada");
-          });
-      });
-  
-      //PRODS
-  
-      apiProdsSQL.ListarProds().then((prods) => {
-        socket.emit("productos", prods);
-      });
-  
-      socket.on("nuevo-producto", (data) => {
-        apiProdsSQL
-          .guardarProd(data)
-          .then(() => {
-            console.log("Producto cargado en la base de datos");
-            return apiProdsSQL.ListarProds();
-          })
-          .then((prods) => {
-            io.sockets.emit("productos", prods);
-            console.log("Vista de productos actualizada");
-          });
-      });
+    //MSJS
+
+    apiMsjMongoDB.ListarMsjs().then((msjs) => {
+      socket.emit("mensajes", msjs);
     });
 
-  }else{
-    res.redirect("/login")
-  };
+    socket.on("nuevo-mensaje", (data) => {
+      apiMsjMongoDB
+        .guardarMsj(data)
+        .then(() => {
+          console.log("Mensaje cargado en la base de datos");
+          return apiMsjMongoDB.ListarMsjs();
+        })
+        .then((msj) => {
+          io.sockets.emit("mensajes", msj);
+          console.log("Vista de mensajes actualizada");
+        });
+    });
+
+    //PRODS
+
+    apiProdsSQL.ListarProds().then((prods) => {
+      socket.emit("productos", prods);
+    });
+
+    socket.on("nuevo-producto", (data) => {
+      apiProdsSQL
+        .guardarProd(data)
+        .then(() => {
+          console.log("Producto cargado en la base de datos");
+          return apiProdsSQL.ListarProds();
+        })
+        .then((prods) => {
+          io.sockets.emit("productos", prods);
+          console.log("Vista de productos actualizada");
+        });
+    });
+  });
 });
 
 //MOCK - FAKE PRODS
@@ -288,14 +281,14 @@ app.get("/failregister", (req, res) => {
 });
 
 //LOG OUT
-app.post("/logout", (req, res) => {
-  const nombre = req.session.username;
+app.post("/logout",checkAuthentication, (req, res) => {
+  const email = req.session.email
   req.session.destroy(error => {
     if(error){
       console.log(error);
       return;
     }else{
-      res.render("logout", {nombre})
+      res.render("logout", {email})
     }
   });
 });
